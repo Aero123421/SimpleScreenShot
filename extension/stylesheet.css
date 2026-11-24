@@ -5,84 +5,105 @@
 }
 
 .simple-screenshot-shade {
-  background-color: rgba(0, 0, 0, 0.48);
+  background-color: rgba(0, 0, 0, 0.50);
 }
 
 .simple-screenshot-selection {
   border: 2px solid #60cdff;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.75), 0 0 14px rgba(96, 205, 255, 0.55);
+  box-shadow: 0 0 12px rgba(0, 0, 0, 0.72);
 }
 
 .simple-screenshot-toolbar {
-  margin-top: 26px;
-  padding: 7px;
+  margin-top: 24px;
+  padding: 6px;
   spacing: 4px;
-  border-radius: 9px;
-  background-color: rgba(32, 32, 32, 0.96);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.46);
+  border-radius: 12px;
+  background-color: rgba(28, 28, 30, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.50);
 }
 
 .simple-screenshot-tool-button {
-  min-width: 86px;
-  padding: 7px 10px;
-  border-radius: 6px;
-  color: #f7f7f7;
+  min-width: 96px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.88);
+  transition-duration: 120ms;
 }
 
 .simple-screenshot-tool-button:hover,
 .simple-screenshot-icon-button:hover {
-  background-color: rgba(255, 255, 255, 0.12);
+  background-color: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+}
+
+.simple-screenshot-tool-button:focus,
+.simple-screenshot-icon-button:focus {
+  box-shadow: inset 0 0 0 2px rgba(96, 205, 255, 0.85);
 }
 
 .simple-screenshot-tool-button:checked {
   color: #ffffff;
-  background-color: #0067c0;
+  background-color: #0078d4;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+.simple-screenshot-tool-button:checked:hover {
+  background-color: #1486de;
 }
 
 .simple-screenshot-tool-content {
-  spacing: 3px;
+  spacing: 4px;
 }
 
 .simple-screenshot-tool-icon {
-  icon-size: 20px;
+  icon-size: 18px;
 }
 
 .simple-screenshot-tool-label {
-  font-size: 10px;
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .simple-screenshot-icon-button {
-  min-width: 36px;
-  min-height: 36px;
+  min-width: 38px;
+  min-height: 38px;
   padding: 8px;
-  border-radius: 6px;
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.88);
+  transition-duration: 120ms;
 }
 
 .simple-screenshot-action-icon {
-  icon-size: 20px;
+  icon-size: 18px;
 }
 
 .simple-screenshot-divider {
   width: 1px;
-  margin: 7px 3px;
-  background-color: rgba(255, 255, 255, 0.18);
+  margin: 8px 4px;
+  background-color: rgba(255, 255, 255, 0.16);
 }
 
 .simple-screenshot-hint {
-  margin-bottom: 32px;
-  padding: 9px 15px;
-  border-radius: 18px;
-  color: #ffffff;
-  background-color: rgba(20, 20, 20, 0.84);
+  margin-bottom: 28px;
+  padding: 9px 16px;
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.94);
+  background-color: rgba(24, 24, 26, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 12px;
   font-weight: 600;
-  box-shadow: 0 5px 20px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.42);
 }
 
 .simple-screenshot-size-label {
-  padding: 6px 10px;
-  border-radius: 5px;
-  background-color: rgba(20, 20, 20, 0.9);
+  padding: 5px 10px;
+  border-radius: 6px;
+  background-color: rgba(20, 20, 22, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.14);
   color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
   font-feature-settings: "tnum";
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.40);
 }

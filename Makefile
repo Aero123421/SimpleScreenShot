@@ -9,16 +9,7 @@ check:
 	sh scripts/check.sh
 
 pack:
-	mkdir -p dist
-	gnome-extensions pack --force --out-dir dist \
-		--extra-source=capture.js \
-		--extra-source=geometry.js \
-		--extra-source=i18n.js \
-		--extra-source=indicator.js \
-		--extra-source=overlay.js \
-		--extra-source=editor \
-		extension
-	zip -q -j $(ARCHIVE) LICENSE LICENSE-APACHE LICENSE-GPL NOTICE
+	sh scripts/pack.sh
 
 release-assets: check
 	cd dist && sha256sum $(notdir $(ARCHIVE)) > $(notdir $(ARCHIVE)).sha256

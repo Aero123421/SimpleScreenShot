@@ -5,6 +5,6 @@
   "license": "Apache-2.0 OR GPL-3.0-or-later",
   "repository": "github:Aero123421/SimpleScreenShot",
   "scripts": {
-    "test": "node tests/geometry.test.mjs"
+    "test": "node tests/geometry.test.mjs && node tests/keybinding.test.mjs && node tests/i18n.test.mjs"
   }
 }

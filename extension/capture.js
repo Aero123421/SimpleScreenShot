@@ -1,32 +1,65 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-3.0-or-later
 
 import Cogl from 'gi://Cogl';
+import GdkPixbuf from 'gi://GdkPixbuf';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
-import GdkPixbuf from 'gi://GdkPixbuf';
 import Shell from 'gi://Shell';
 import St from 'gi://St';
 
-import {sanitizeFilename} from './geometry.js';
+import {clampCaptureGeometry, formatFilenamePattern} from './geometry.js';
 
 Gio._promisify(Shell.Screenshot.prototype, 'screenshot_stage_to_content');
 Gio._promisify(Shell.Screenshot, 'composite_to_stream');
+Gio._promisify(Gio.File.prototype, 'create_async');
+Gio._promisify(Gio.File.prototype, 'load_contents_async');
+Gio._promisify(Gio.File.prototype, 'replace_contents_bytes_async', 'replace_contents_finish');
+Gio._promisify(Gio.File.prototype, 'delete_async');
+Gio._promisify(Gio.File.prototype, 'make_directory_async');
+Gio._promisify(Gio.File.prototype, 'query_info_async');
+Gio._promisify(Gio.OutputStream.prototype, 'write_bytes_async');
+Gio._promisify(Gio.OutputStream.prototype, 'close_async');
 
-function ensureDirectory(path) {
-    const directory = Gio.File.new_for_path(path);
-    try {
-        directory.make_directory_with_parents(null);
-    } catch (error) {
-        if (!error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.EXISTS))
-            throw error;
+const PREVIEW_MAX_EDGE = 256;
+
+function isGioError(error, code) {
+    return error instanceof GLib.Error && error.matches(Gio.IOErrorEnum, code);
+}
+
+async function ensureDirectoryAsync(path) {
+    const missing = [];
+    let current = Gio.File.new_for_path(path);
+    while (current) {
+        try {
+            await current.query_info_async(
+                'standard::type', Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, null);
+            break;
+        } catch (error) {
+            if (!isGioError(error, Gio.IOErrorEnum.NOT_FOUND))
+                throw error;
+            missing.push(current);
+            current = current.get_parent();
+        }
     }
-    return directory;
+    for (let i = missing.length - 1; i >= 0; i--) {
+        try {
+            await missing[i].make_directory_async(GLib.PRIORITY_DEFAULT, null);
+        } catch (error) {
+            if (!isGioError(error, Gio.IOErrorEnum.EXISTS))
+                throw error;
+        }
+    }
+    return Gio.File.new_for_path(path);
 }
 
 function defaultPicturesDirectory() {
     const pictures = GLib.get_user_special_dir(
         GLib.UserDirectory.DIRECTORY_PICTURES) ?? GLib.get_home_dir();
     return GLib.build_filenamev([pictures, 'Screenshots']);
+}
+
+function runtimeCaptureDirectory() {
+    return GLib.build_filenamev([GLib.get_user_runtime_dir(), 'simple-screenshot']);
 }
 
 function expandUserDirectory(path) {
@@ -37,40 +70,104 @@ function expandUserDirectory(path) {
     return path;
 }
 
-function createUniqueFile(directory, basename) {
-    for (let suffix = 0; ; suffix++) {
+async function createUniqueFileAsync(directory, basename) {
+    for (let suffix = 0; suffix < 10000; suffix++) {
         const tail = suffix === 0 ? '' : `-${suffix + 1}`;
         const file = directory.get_child(`${basename}${tail}.png`);
-        if (!file.query_exists(null))
-            return file;
+        try {
+            const stream = await file.create_async(
+                Gio.FileCreateFlags.NONE, GLib.PRIORITY_DEFAULT, null);
+            return {file, stream};
+        } catch (error) {
+            if (isGioError(error, Gio.IOErrorEnum.EXISTS))
+                continue;
+            throw error;
+        }
     }
+    throw new Error('Could not allocate a unique screenshot filename');
 }
 
-function writeBytes(file, bytes) {
-    const stream = file.create(Gio.FileCreateFlags.NONE, null);
+async function writeAllBytesAndCloseAsync(file, stream, bytes) {
+    const data = bytes.toArray();
+    let offset = 0;
     try {
-        stream.write_bytes(bytes, null);
-    } finally {
-        stream.close(null);
+        while (offset < data.length) {
+            const chunk = GLib.Bytes.new(data.subarray(offset));
+            const written = await stream.write_bytes_async(
+                chunk, GLib.PRIORITY_DEFAULT, null);
+            if (written <= 0)
+                throw new Error('Incomplete write while saving screenshot');
+            offset += written;
+        }
+        await stream.close_async(GLib.PRIORITY_DEFAULT, null);
+    } catch (error) {
+        try {
+            await stream.close_async(GLib.PRIORITY_DEFAULT, null);
+        } catch (_closeError) {
+            // Ignore secondary close error while cleaning up partial file.
+        }
+        try {
+            await file.delete_async(GLib.PRIORITY_DEFAULT, null);
+        } catch (_deleteError) {
+            // Best-effort cleanup of incomplete file.
+        }
+        throw error;
     }
 }
 
-function writeJson(filePath, value) {
+async function readHistoryFileAsync(filePath) {
+    try {
+        const file = Gio.File.new_for_path(filePath);
+        const [contents] = await file.load_contents_async(null);
+        const parsed = JSON.parse(new TextDecoder().decode(contents));
+        if (!Array.isArray(parsed))
+            throw new Error('History index is not a JSON array');
+        return parsed;
+    } catch (error) {
+        if (isGioError(error, Gio.IOErrorEnum.NOT_FOUND))
+            return [];
+        throw error;
+    }
+}
+
+async function writeJsonAsync(filePath, value) {
     const file = Gio.File.new_for_path(filePath);
-    const bytes = new TextEncoder().encode(JSON.stringify(value, null, 2));
-    file.replace_contents(
-        bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
+    const encoded = new TextEncoder().encode(JSON.stringify(value, null, 2));
+    await file.replace_contents_bytes_async(
+        GLib.Bytes.new(encoded),
+        null,
+        false,
+        Gio.FileCreateFlags.REPLACE_DESTINATION,
+        null
+    );
 }
 
-function readJson(filePath, fallback) {
+function dateParts(dateTime) {
+    return {
+        year: dateTime.format('%Y'),
+        month: dateTime.format('%m'),
+        day: dateTime.format('%d'),
+        hour: dateTime.format('%H'),
+        minute: dateTime.format('%M'),
+        second: dateTime.format('%S'),
+    };
+}
+
+function isSaveDisabledByLockdown() {
     try {
-        const [ok, contents] = GLib.file_get_contents(filePath);
-        if (!ok)
-            return fallback;
-        return JSON.parse(new TextDecoder().decode(contents));
+        const source = Gio.SettingsSchemaSource.get_default();
+        if (!source?.lookup('org.gnome.desktop.lockdown', true))
+            return false;
+        const lockdown = new Gio.Settings({schema_id: 'org.gnome.desktop.lockdown'});
+        return lockdown.get_boolean('disable-save-to-disk');
     } catch (_error) {
-        return fallback;
+        return false;
     }
+}
+
+function isPathInsideDirectory(filePath, directoryPath) {
+    const prefix = directoryPath.endsWith('/') ? directoryPath : `${directoryPath}/`;
+    return typeof filePath === 'string' && filePath.startsWith(prefix);
 }
 
 export class CaptureService {
@@ -79,6 +176,7 @@ export class CaptureService {
         this._historyPath = GLib.build_filenamev([
             GLib.get_user_data_dir(), 'simple-screenshot', 'history.json',
         ]);
+        this._historyQueue = Promise.resolve();
     }
 
     async prepare() {
@@ -96,104 +194,197 @@ export class CaptureService {
         };
     }
 
-    async capture(snapshot, geometry) {
-        const scale = snapshot.scale;
+    async capture(snapshot, target, shouldContinue = () => true) {
         const stream = Gio.MemoryOutputStream.new_resizable();
-        const includePointer = this._settings.get_boolean('include-pointer');
+        const includePointer = Boolean(target.includePointer);
         const cursorTexture = includePointer
             ? snapshot.cursorContent?.get_texture() ?? null
             : null;
-        const scaled = [
-            geometry.x * scale,
-            geometry.y * scale,
-            geometry.width * scale,
-            geometry.height * scale,
-        ].map(value => Math.round(value));
 
-        const pixbuf = await Shell.Screenshot.composite_to_stream(
-            snapshot.texture,
-            ...scaled,
-            scale,
-            cursorTexture,
-            (snapshot.cursorPoint?.x ?? 0) * scale,
-            (snapshot.cursorPoint?.y ?? 0) * scale,
-            snapshot.cursorScale ?? 1,
-            stream
-        );
+        let pixbuf;
+        if (target.mode === 'window') {
+            if (!target.windowTarget?.texture) {
+                stream.close(null);
+                throw new Error('Selected window content is unavailable');
+            }
+            const {texture, bufferScale, bufferRect, ownsCursor} = target.windowTarget;
+            const windowCursor = ownsCursor ? cursorTexture : null;
+            const cursorX = ((snapshot.cursorPoint?.x ?? 0) - bufferRect.x) * bufferScale;
+            const cursorY = ((snapshot.cursorPoint?.y ?? 0) - bufferRect.y) * bufferScale;
+            pixbuf = await Shell.Screenshot.composite_to_stream(
+                texture,
+                0, 0, -1, -1,
+                bufferScale,
+                windowCursor,
+                cursorX,
+                cursorY,
+                snapshot.cursorScale ?? 1,
+                stream
+            );
+        } else {
+            const scale = snapshot.scale;
+            const scaled = clampCaptureGeometry(
+                target.rect,
+                scale,
+                snapshot.texture.get_width(),
+                snapshot.texture.get_height()
+            );
+            if (!scaled) {
+                stream.close(null);
+                throw new Error('Selected capture region is outside the screen');
+            }
+            pixbuf = await Shell.Screenshot.composite_to_stream(
+                snapshot.texture,
+                ...scaled,
+                scale,
+                cursorTexture,
+                (snapshot.cursorPoint?.x ?? 0) * scale,
+                (snapshot.cursorPoint?.y ?? 0) * scale,
+                snapshot.cursorScale ?? 1,
+                stream
+            );
+        }
         stream.close(null);
-        const bytes = stream.steal_as_bytes();
 
+        if (!shouldContinue())
+            return null;
+
+        const bytes = stream.steal_as_bytes();
         global.display.get_sound_player().play_from_theme(
             'screen-capture', 'Screenshot taken', null);
 
-        if (this._settings.get_boolean('copy-to-clipboard')) {
+        const copiedToClipboard = this._settings.get_boolean('copy-to-clipboard');
+        if (copiedToClipboard) {
             St.Clipboard.get_default().set_content(
                 St.ClipboardType.CLIPBOARD, 'image/png', bytes);
         }
 
-        const file = this._writeCapture(bytes);
-        this._appendHistory(file, geometry);
+        const saveDisabledByPolicy = isSaveDisabledByLockdown();
+        if (saveDisabledByPolicy) {
+            return {
+                file: null,
+                pixbuf,
+                copiedToClipboard,
+                savedPermanently: false,
+                saveDisabledByPolicy: true,
+            };
+        }
 
-        return {file, pixbuf, bytes};
+        const savedPermanently = this._settings.get_boolean('save-copies');
+        const file = await this._writeCaptureAsync(bytes, savedPermanently);
+        if (!shouldContinue()) {
+            if (!savedPermanently) {
+                try {
+                    await file.delete_async(GLib.PRIORITY_DEFAULT, null);
+                } catch (_deleteError) {
+                    // Best-effort cleanup of unindexed temporary capture.
+                }
+            }
+            return null;
+        }
+
+        const limit = this._settings.get_int('history-limit');
+        this._queueHistoryUpdate(file, pixbuf, savedPermanently, limit);
+
+        return {
+            file,
+            pixbuf,
+            copiedToClipboard,
+            savedPermanently,
+            saveDisabledByPolicy: false,
+        };
     }
 
-    _writeCapture(bytes) {
-        const keepCopy = this._settings.get_boolean('save-copies');
+    async _writeCaptureAsync(bytes, keepCopy) {
         let directoryPath;
-
         if (keepCopy) {
-            const configured = this._settings.get_string('save-directory').trim();
-            directoryPath = configured
+            const configured = this._settings.get_string('save-directory');
+            directoryPath = configured.trim().length > 0
                 ? expandUserDirectory(configured)
                 : defaultPicturesDirectory();
         } else {
-            directoryPath = GLib.build_filenamev([
-                GLib.get_user_runtime_dir(), 'simple-screenshot',
-            ]);
+            directoryPath = runtimeCaptureDirectory();
         }
 
-        const directory = ensureDirectory(directoryPath);
+        const directory = await ensureDirectoryAsync(directoryPath);
         const now = GLib.DateTime.new_now_local();
-        const replacements = {
-            '{date}': now.format('%Y-%m-%d'),
-            '{time}': now.format('%H-%M-%S'),
-            '{timestamp}': now.format('%Y-%m-%d %H-%M-%S'),
-        };
-        let basename = this._settings.get_string('filename-pattern');
-        for (const [token, value] of Object.entries(replacements))
-            basename = basename.replaceAll(token, value);
+        const basename = formatFilenamePattern(
+            this._settings.get_string('filename-pattern'),
+            dateParts(now)
+        );
 
-        const file = createUniqueFile(directory, sanitizeFilename(basename));
-        writeBytes(file, bytes);
+        const {file, stream} = await createUniqueFileAsync(directory, basename);
+        await writeAllBytesAndCloseAsync(file, stream, bytes);
         return file;
     }
 
-    _appendHistory(file, geometry) {
-        ensureDirectory(GLib.path_get_dirname(this._historyPath));
-        const history = readJson(this._historyPath, []);
-        history.unshift({
+    _queueHistoryUpdate(file, pixbuf, savedPermanently, limit) {
+        const entry = {
             path: file.get_path(),
             uri: file.get_uri(),
             createdAt: GLib.DateTime.new_now_local().format_iso8601(),
-            width: geometry.width,
-            height: geometry.height,
-        });
+            width: pixbuf.width,
+            height: pixbuf.height,
+            temporary: !savedPermanently,
+        };
 
-        const limit = this._settings.get_int('history-limit');
-        writeJson(this._historyPath, history.slice(0, limit));
+        this._historyQueue = this._historyQueue
+            .then(() => this._appendHistoryAsync(entry, limit))
+            .catch(error => {
+                console.error(`Unable to update screenshot history: ${error.message}`);
+            });
+    }
+
+    async _appendHistoryAsync(entry, limit) {
+        await ensureDirectoryAsync(GLib.path_get_dirname(this._historyPath));
+        const history = await readHistoryFileAsync(this._historyPath);
+        history.unshift(entry);
+
+        const kept = history.slice(0, limit);
+        const evicted = history.slice(limit);
+        await writeJsonAsync(this._historyPath, kept);
+
+        // Clean up extension-owned temporary captures once evicted from history.
+        const runtimeDir = runtimeCaptureDirectory();
+        const keptPaths = new Set(kept.map(item => item?.path));
+        for (const old of evicted) {
+            if (!old?.temporary || !old?.path || keptPaths.has(old.path))
+                continue;
+            if (!isPathInsideDirectory(old.path, runtimeDir))
+                continue;
+            try {
+                await Gio.File.new_for_path(old.path).delete_async(
+                    GLib.PRIORITY_DEFAULT, null);
+            } catch (_error) {
+                // Already deleted or inaccessible.
+            }
+        }
     }
 
     static previewContent(pixbuf) {
-        const pixels = pixbuf.read_pixel_bytes();
+        let preview = pixbuf;
+        const maxDim = Math.max(pixbuf.width, pixbuf.height);
+        if (maxDim > PREVIEW_MAX_EDGE) {
+            const ratio = PREVIEW_MAX_EDGE / maxDim;
+            const scaled = pixbuf.scale_simple(
+                Math.max(1, Math.round(pixbuf.width * ratio)),
+                Math.max(1, Math.round(pixbuf.height * ratio)),
+                GdkPixbuf.InterpType.BILINEAR
+            );
+            if (scaled)
+                preview = scaled;
+        }
+
+        const pixels = preview.read_pixel_bytes();
         const content = St.ImageContent.new_with_preferred_size(
-            pixbuf.width, pixbuf.height);
-        const hasAlpha = pixbuf.get_has_alpha();
+            preview.width, preview.height);
+        const hasAlpha = preview.get_has_alpha();
         content.set_bytes(
             pixels,
             hasAlpha ? Cogl.PixelFormat.RGBA_8888 : Cogl.PixelFormat.RGB_888,
-            pixbuf.width,
-            pixbuf.height,
-            pixbuf.rowstride
+            preview.width,
+            preview.height,
+            preview.rowstride
         );
         return content;
     }

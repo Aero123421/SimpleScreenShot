@@ -3,6 +3,7 @@
 import GObject from 'gi://GObject';
 import St from 'gi://St';
 
+import * as BoxPointer from 'resource:///org/gnome/shell/ui/boxpointer.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
@@ -18,11 +19,19 @@ class CaptureIndicator extends PanelMenu.Button {
             style_class: 'system-status-icon',
         }));
 
-        this.menu.addAction(t('area'), () => extension.openOverlay('region'));
-        this.menu.addAction(t('captureWindow'), () => extension.openOverlay('window'));
-        this.menu.addAction(t('captureScreen'), () => extension.openOverlay('screen'));
+        this._addCaptureAction(t('area'), 'region');
+        this._addCaptureAction(t('captureWindow'), 'window');
+        this._addCaptureAction(t('captureScreen'), 'screen');
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this.menu.addAction(t('history'), () => extension.openEditor());
         this.menu.addAction(t('settings'), () => extension.openPreferences());
+    }
+
+    _addCaptureAction(label, mode) {
+        this.menu.addAction(label, () => {
+            // Close the panel menu immediately so it never appears in the frozen snapshot.
+            this.menu.close(BoxPointer.PopupAnimation.NONE);
+            this._extension.openOverlayDeferred(mode);
+        });
     }
 });

@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-3.0-or-later
 
-import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 
 export class HistoryStore {
@@ -15,10 +14,10 @@ export class HistoryStore {
             const [ok, contents] = GLib.file_get_contents(this.path);
             if (!ok)
                 return [];
-            const entries = JSON.parse(new TextDecoder().decode(contents));
-            return entries.filter(entry =>
-                typeof entry.path === 'string' &&
-                Gio.File.new_for_path(entry.path).query_exists(null));
+            const parsed = JSON.parse(new TextDecoder().decode(contents));
+            if (!Array.isArray(parsed))
+                return [];
+            return parsed.filter(entry => entry && typeof entry.path === 'string');
         } catch (_error) {
             return [];
         }

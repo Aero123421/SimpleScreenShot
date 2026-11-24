@@ -3,12 +3,19 @@
 import Adw from 'gi://Adw';
 import Gdk from 'gi://Gdk?version=4.0';
 import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
 import Gtk from 'gi://Gtk?version=4.0';
 
 import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
+import {formatFilenamePattern} from './geometry.js';
+import {t} from './i18n.js';
+
 const DEFAULT_SHORTCUT = '<Shift><Super>s';
+const DEFAULT_PATTERN = 'Screenshot {timestamp}';
 const SHORTCUT_KEY = 'simple-screenshot-open-overlay';
+const LEGACY_SHORTCUT_KEY = 'shortcut';
+const MODES = ['region', 'window', 'screen'];
 
 const MODIFIER_KEYS = new Set([
     Gdk.KEY_Shift_L,
@@ -25,7 +32,14 @@ const MODIFIER_KEYS = new Set([
     Gdk.KEY_Hyper_R,
     Gdk.KEY_ISO_Level3_Shift,
     Gdk.KEY_ISO_Level5_Shift,
+    Gdk.KEY_Caps_Lock,
+    Gdk.KEY_Num_Lock,
 ]);
+
+function isDismissedError(error) {
+    return error instanceof GLib.Error &&
+        error.matches(Gtk.DialogError, Gtk.DialogError.DISMISSED);
+}
 
 function isValidGlobalShortcut(keyval, keycode, modifiers) {
     if (!Gtk.accelerator_valid(keyval, modifiers))
@@ -43,79 +57,110 @@ function isValidGlobalShortcut(keyval, keycode, modifiers) {
     return keycode === 0 || worksOnItsOwn || (modifiers & strongModifiers) !== 0;
 }
 
+function shortcutDisplayName(accelerator) {
+    if (!accelerator)
+        return t('prefsNotSet');
+
+    const [success, keyval, modifiers] = Gtk.accelerator_parse(accelerator);
+    return success ? Gtk.accelerator_get_label(keyval, modifiers) : t('prefsNotSet');
+}
+
+function currentDateParts() {
+    const now = GLib.DateTime.new_now_local();
+    return {
+        year: now.format('%Y'),
+        month: now.format('%m'),
+        day: now.format('%d'),
+        hour: now.format('%H'),
+        minute: now.format('%M'),
+        second: now.format('%S'),
+    };
+}
+
 function showShortcutRecorder(window, settings) {
     const dialog = new Adw.Window({
-        title: 'Set keyboard shortcut',
+        title: t('prefsShortcutDialogTitle'),
         transient_for: window,
         modal: true,
-        default_width: 500,
-        default_height: 380,
+        resizable: false,
+        default_width: 480,
+        default_height: 360,
     });
 
-    const root = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL});
-    dialog.content = root;
-    root.append(new Adw.HeaderBar());
+    const toolbarView = new Adw.ToolbarView();
+    toolbarView.add_top_bar(new Adw.HeaderBar());
+    dialog.content = toolbarView;
 
     const content = new Gtk.Box({
         orientation: Gtk.Orientation.VERTICAL,
         spacing: 18,
         vexpand: true,
         valign: Gtk.Align.CENTER,
+        margin_top: 20,
+        margin_bottom: 24,
+        margin_start: 32,
+        margin_end: 32,
     });
-    content.orientation = Gtk.Orientation.VERTICAL;
-    content.margin_top = 24;
-    content.margin_bottom = 24;
-    content.margin_start = 36;
-    content.margin_end = 36;
-    root.append(content);
+    toolbarView.content = content;
+
+    // Focusable capture target so Tab navigation to the action buttons below still works.
+    const captureArea = new Gtk.Box({
+        orientation: Gtk.Orientation.VERTICAL,
+        spacing: 16,
+        focusable: true,
+        can_focus: true,
+        halign: Gtk.Align.FILL,
+    });
 
     const icon = new Gtk.Image({
         icon_name: 'input-keyboard-symbolic',
         pixel_size: 48,
+        css_classes: ['accent'],
     });
-    icon.add_css_class('accent');
-    content.append(icon);
+    captureArea.append(icon);
 
     const heading = new Gtk.Label({
-        label: 'Press the new shortcut now',
+        label: t('prefsShortcutHeading'),
         justify: Gtk.Justification.CENTER,
+        css_classes: ['title-2'],
     });
-    heading.add_css_class('title-2');
-    content.append(heading);
+    captureArea.append(heading);
 
     const preview = new Gtk.ShortcutLabel({
-        accelerator: '',
-        disabled_text: 'Waiting for keys…',
+        accelerator: settings.get_strv(SHORTCUT_KEY)[0] ?? '',
+        disabled_text: t('prefsShortcutWaiting'),
         halign: Gtk.Align.CENTER,
     });
-    content.append(preview);
+    captureArea.append(preview);
 
     const hint = new Gtk.Label({
-        label: 'Hold one or more modifier keys, then press another key.\nFor example: Shift + Super + S',
+        label: t('prefsShortcutHint'),
         justify: Gtk.Justification.CENTER,
         wrap: true,
+        css_classes: ['dim-label'],
     });
-    hint.add_css_class('dim-label');
-    content.append(hint);
+    captureArea.append(hint);
+    content.append(captureArea);
 
     const saveShortcut = accelerator => {
         settings.set_strv(SHORTCUT_KEY, accelerator ? [accelerator] : []);
         const message = accelerator
-            ? `Shortcut set to ${shortcutDisplayName(accelerator)}`
-            : 'Keyboard shortcut cleared';
+            ? t('prefsShortcutToastSet', {shortcut: shortcutDisplayName(accelerator)})
+            : t('prefsShortcutToastCleared');
         window.add_toast(new Adw.Toast({title: message, timeout: 3}));
     };
 
     const actions = new Gtk.Box({
         orientation: Gtk.Orientation.HORIZONTAL,
-        spacing: 12,
+        spacing: 10,
         homogeneous: true,
+        margin_top: 6,
     });
-    const cancel = new Gtk.Button({label: 'Cancel'});
+    const cancel = new Gtk.Button({label: t('prefsShortcutCancel')});
     cancel.connect('clicked', () => dialog.close());
     actions.append(cancel);
 
-    const clear = new Gtk.Button({label: 'Clear'});
+    const clear = new Gtk.Button({label: t('prefsShortcutClear')});
     clear.connect('clicked', () => {
         saveShortcut('');
         dialog.close();
@@ -123,7 +168,7 @@ function showShortcutRecorder(window, settings) {
     actions.append(clear);
 
     const useDefault = new Gtk.Button({
-        label: 'Use default',
+        label: t('prefsShortcutUseDefault'),
         tooltip_text: 'Shift + Super + S',
         css_classes: ['suggested-action'],
     });
@@ -134,16 +179,53 @@ function showShortcutRecorder(window, settings) {
     actions.append(useDefault);
     content.append(actions);
 
+    let shortcutsInhibited = false;
+    const inhibitShortcuts = () => {
+        if (shortcutsInhibited)
+            return;
+        const surface = dialog.get_surface();
+        if (surface?.inhibit_system_shortcuts) {
+            surface.inhibit_system_shortcuts(null);
+            shortcutsInhibited = true;
+        }
+    };
+    const restoreShortcuts = () => {
+        if (!shortcutsInhibited)
+            return;
+        dialog.get_surface()?.restore_system_shortcuts?.();
+        shortcutsInhibited = false;
+    };
+
+    const focusController = new Gtk.EventControllerFocus();
+    focusController.connect('enter', inhibitShortcuts);
+    focusController.connect('leave', restoreShortcuts);
+    captureArea.add_controller(focusController);
+
+    dialog.connect('close-request', () => {
+        restoreShortcuts();
+        return false;
+    });
+    dialog.connect('destroy', restoreShortcuts);
+
     const keys = Gtk.EventControllerKey.new();
-    keys.propagation_phase = Gtk.PropagationPhase.CAPTURE;
     keys.connect('key-pressed', (_controller, pressedKeyval, keycode, state) => {
-        if (pressedKeyval === Gdk.KEY_Escape) {
+        const cleanModifiers = (state & Gtk.accelerator_get_default_mod_mask()) &
+            ~Gdk.ModifierType.LOCK_MASK;
+
+        if (pressedKeyval === Gdk.KEY_Escape && cleanModifiers === 0) {
             dialog.close();
             return Gdk.EVENT_STOP;
         }
 
+        // Preserve keyboard focus traversal (Tab / Shift+Tab) to the action buttons below.
+        if ((pressedKeyval === Gdk.KEY_Tab || pressedKeyval === Gdk.KEY_ISO_Left_Tab) &&
+            (cleanModifiers & ~Gdk.ModifierType.SHIFT_MASK) === 0) {
+            return Gdk.EVENT_PROPAGATE;
+        }
+
         if (MODIFIER_KEYS.has(pressedKeyval)) {
-            preview.disabled_text = 'Keep holding, then press another key…';
+            preview.accelerator = '';
+            preview.disabled_text = t('prefsShortcutKeepHolding');
             return Gdk.EVENT_STOP;
         }
 
@@ -152,32 +234,38 @@ function showShortcutRecorder(window, settings) {
             keyval = Gdk.KEY_Tab;
         keyval = Gdk.keyval_to_lower(keyval);
 
-        let modifiers = state & Gtk.accelerator_get_default_mod_mask();
-        modifiers &= ~Gdk.ModifierType.LOCK_MASK;
-
-        if (!isValidGlobalShortcut(keyval, keycode, modifiers)) {
+        if (!isValidGlobalShortcut(keyval, keycode, cleanModifiers)) {
             preview.accelerator = '';
-            preview.disabled_text = 'Add Ctrl, Alt, or Super';
-            hint.label = 'That key would interfere with normal typing.\nTry a combination such as Shift + Super + S.';
+            preview.disabled_text = t('prefsShortcutNeedModifier');
+            hint.label = t('prefsShortcutInterfere');
             return Gdk.EVENT_STOP;
         }
 
-        const accelerator = Gtk.accelerator_name(keyval, modifiers);
+        const accelerator = Gtk.accelerator_name(keyval, cleanModifiers);
         preview.accelerator = accelerator;
+        restoreShortcuts();
         saveShortcut(accelerator);
         dialog.destroy();
         return Gdk.EVENT_STOP;
     });
-    dialog.add_controller(keys);
+    captureArea.add_controller(keys);
+
+    // Allow Escape to close the dialog even when focus is on one of the buttons.
+    const dialogKeys = Gtk.EventControllerKey.new();
+    dialogKeys.connect('key-pressed', (_controller, keyval, _keycode, state) => {
+        const mods = (state & Gtk.accelerator_get_default_mod_mask()) &
+            ~Gdk.ModifierType.LOCK_MASK;
+        if (keyval === Gdk.KEY_Escape && mods === 0) {
+            dialog.close();
+            return Gdk.EVENT_STOP;
+        }
+        return Gdk.EVENT_PROPAGATE;
+    });
+    dialog.add_controller(dialogKeys);
+
     dialog.present();
-}
-
-function shortcutDisplayName(accelerator) {
-    if (!accelerator)
-        return 'Not set';
-
-    const [success, keyval, modifiers] = Gtk.accelerator_parse(accelerator);
-    return success ? Gtk.accelerator_get_label(keyval, modifiers) : 'Not set';
+    captureArea.grab_focus();
+    inhibitShortcuts();
 }
 
 function addSwitch(group, settings, key, title, subtitle) {
@@ -190,44 +278,51 @@ function addSwitch(group, settings, key, title, subtitle) {
 export default class SimpleScreenshotPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
         const settings = this.getSettings();
-        window.set_default_size(680, 720);
+        const signalIds = [];
+
+        if (settings.get_user_value(SHORTCUT_KEY) === null &&
+            settings.get_user_value(LEGACY_SHORTCUT_KEY) !== null) {
+            settings.set_strv(SHORTCUT_KEY, settings.get_strv(LEGACY_SHORTCUT_KEY));
+        }
+
+        window.set_default_size(680, 740);
         window.search_enabled = true;
 
         const general = new Adw.PreferencesPage({
-            title: 'General',
+            title: t('prefsGeneral'),
             icon_name: 'preferences-system-symbolic',
         });
         window.add(general);
 
-        const behavior = new Adw.PreferencesGroup({title: 'Capture behavior'});
+        const behavior = new Adw.PreferencesGroup({title: t('prefsCaptureBehavior')});
         general.add(behavior);
         addSwitch(behavior, settings, 'copy-to-clipboard',
-            'Copy to clipboard', 'Make every new capture immediately pasteable');
+            t('prefsCopyTitle'), t('prefsCopySubtitle'));
         addSwitch(behavior, settings, 'save-copies',
-            'Save a copy', 'Keep the original capture before editing');
+            t('prefsSaveCopiesTitle'), t('prefsSaveCopiesSubtitle'));
         addSwitch(behavior, settings, 'show-notification',
-            'Show preview notification', 'Click the notification to open the editor');
+            t('prefsNotificationTitle'), t('prefsNotificationSubtitle'));
         addSwitch(behavior, settings, 'auto-open-editor',
-            'Open editor after capture', 'Skip the notification-only workflow');
+            t('prefsAutoEditorTitle'), t('prefsAutoEditorSubtitle'));
         addSwitch(behavior, settings, 'include-pointer',
-            'Include mouse pointer', 'Draw the current pointer into the image');
+            t('prefsPointerTitle'), t('prefsPointerSubtitle'));
         addSwitch(behavior, settings, 'show-indicator',
-            'Show top-panel button', 'Keep capture commands in the system panel');
+            t('prefsIndicatorTitle'), t('prefsIndicatorSubtitle'));
 
-        const capture = new Adw.PreferencesGroup({title: 'Capture controls'});
+        const capture = new Adw.PreferencesGroup({title: t('prefsCaptureControls')});
         general.add(capture);
 
         const shortcut = new Adw.ActionRow({
-            title: 'Keyboard shortcut',
-            subtitle: 'Opens the snipping overlay from anywhere',
+            title: t('prefsShortcutTitle'),
+            subtitle: t('prefsShortcutSubtitle'),
         });
         const shortcutLabel = new Gtk.ShortcutLabel({
             accelerator: settings.get_strv(SHORTCUT_KEY)[0] ?? '',
-            disabled_text: 'Not set',
+            disabled_text: t('prefsNotSet'),
             valign: Gtk.Align.CENTER,
         });
         const changeShortcut = new Gtk.Button({
-            label: 'Change…',
+            label: t('prefsChange'),
             valign: Gtk.Align.CENTER,
         });
         changeShortcut.connect('clicked', () =>
@@ -237,76 +332,136 @@ export default class SimpleScreenshotPreferences extends ExtensionPreferences {
         shortcut.activatable_widget = changeShortcut;
         capture.add(shortcut);
 
-        const shortcutChangedId = settings.connect(
-            `changed::${SHORTCUT_KEY}`, () => {
-                shortcutLabel.accelerator =
-                    settings.get_strv(SHORTCUT_KEY)[0] ?? '';
-        });
-        window.connect('close-request', () => {
-            settings.disconnect(shortcutChangedId);
-            return false;
-        });
+        signalIds.push(settings.connect(`changed::${SHORTCUT_KEY}`, () => {
+            shortcutLabel.accelerator = settings.get_strv(SHORTCUT_KEY)[0] ?? '';
+        }));
 
         const modeModel = Gtk.StringList.new([
-            'Rectangular snip', 'Window snip', 'Full-screen snip',
+            t('prefsModeRegion'),
+            t('prefsModeWindow'),
+            t('prefsModeScreen'),
         ]);
         const modeRow = new Adw.ComboRow({
-            title: 'Default mode',
+            title: t('prefsDefaultMode'),
             model: modeModel,
-            selected: Math.max(0, ['region', 'window', 'screen']
-                .indexOf(settings.get_string('default-mode'))),
+            selected: Math.max(0, MODES.indexOf(settings.get_string('default-mode'))),
         });
         modeRow.connect('notify::selected', () => {
-            settings.set_string('default-mode',
-                ['region', 'window', 'screen'][modeRow.selected]);
+            const selectedMode = MODES[modeRow.selected];
+            if (selectedMode && settings.get_string('default-mode') !== selectedMode)
+                settings.set_string('default-mode', selectedMode);
         });
+        signalIds.push(settings.connect('changed::default-mode', () => {
+            const index = Math.max(0, MODES.indexOf(settings.get_string('default-mode')));
+            if (modeRow.selected !== index)
+                modeRow.selected = index;
+        }));
         capture.add(modeRow);
 
         const storage = new Adw.PreferencesPage({
-            title: 'Storage',
+            title: t('prefsStorage'),
             icon_name: 'folder-pictures-symbolic',
         });
         window.add(storage);
-        const files = new Adw.PreferencesGroup({title: 'Files and history'});
+
+        const files = new Adw.PreferencesGroup({title: t('prefsFilesHistory')});
         storage.add(files);
 
         const directoryRow = new Adw.ActionRow({
-            title: 'Save directory',
-            subtitle: settings.get_string('save-directory') || 'Pictures/Screenshots',
+            title: t('prefsSaveDirectory'),
+        });
+        const resetDirectory = new Gtk.Button({
+            icon_name: 'edit-undo-symbolic',
+            tooltip_text: t('prefsReset'),
+            valign: Gtk.Align.CENTER,
+            css_classes: ['flat'],
+        });
+        const syncDirectoryRow = () => {
+            const configured = settings.get_string('save-directory').trim();
+            directoryRow.subtitle = configured || t('prefsDefaultDirectory');
+            resetDirectory.visible = configured.length > 0;
+        };
+        resetDirectory.connect('clicked', () => {
+            settings.set_string('save-directory', '');
+            syncDirectoryRow();
         });
         const chooseDirectory = new Gtk.Button({
-            label: 'Choose…',
+            label: t('prefsChoose'),
             valign: Gtk.Align.CENTER,
         });
         chooseDirectory.connect('clicked', () => {
-            const dialog = new Gtk.FileDialog({title: 'Choose screenshot directory'});
+            const dialog = new Gtk.FileDialog({title: t('prefsChooseDirectoryTitle')});
             dialog.select_folder(window, null, (_dialog, result) => {
                 try {
                     const folder = dialog.select_folder_finish(result);
-                    settings.set_string('save-directory', folder.get_path());
-                    directoryRow.subtitle = folder.get_path();
+                    const folderPath = folder?.get_path?.();
+                    if (!folderPath) {
+                        window.add_toast(new Adw.Toast({
+                            title: t('prefsLocalFolderOnly'),
+                            timeout: 3,
+                        }));
+                        return;
+                    }
+                    settings.set_string('save-directory', folderPath);
+                    syncDirectoryRow();
                 } catch (error) {
-                    if (!error.matches(Gtk.DialogError, Gtk.DialogError.DISMISSED))
+                    if (!isDismissedError(error))
                         console.error(error.message);
                 }
             });
         });
+        directoryRow.add_suffix(resetDirectory);
         directoryRow.add_suffix(chooseDirectory);
         directoryRow.activatable_widget = chooseDirectory;
+        syncDirectoryRow();
+        signalIds.push(settings.connect('changed::save-directory', syncDirectoryRow));
         files.add(directoryRow);
 
         const filename = new Adw.EntryRow({
-            title: 'Filename pattern',
+            title: t('prefsFilenamePattern'),
             text: settings.get_string('filename-pattern'),
         });
-        filename.connect('notify::text', () =>
-            settings.set_string('filename-pattern', filename.text));
+        const resetFilename = new Gtk.Button({
+            icon_name: 'edit-undo-symbolic',
+            tooltip_text: t('prefsReset'),
+            valign: Gtk.Align.CENTER,
+            css_classes: ['flat'],
+        });
+        const updateFilenamePreview = () => {
+            const pattern = filename.text;
+            const example = formatFilenamePattern(pattern, currentDateParts());
+            files.description = t('prefsFilenamePreview', {example});
+            resetFilename.visible = pattern !== DEFAULT_PATTERN;
+        };
+        resetFilename.connect('clicked', () => {
+            filename.text = DEFAULT_PATTERN;
+        });
+        filename.add_suffix(resetFilename);
+        filename.connect('notify::text', () => {
+            if (settings.get_string('filename-pattern') !== filename.text)
+                settings.set_string('filename-pattern', filename.text);
+            updateFilenamePreview();
+        });
+        signalIds.push(settings.connect('changed::filename-pattern', () => {
+            const value = settings.get_string('filename-pattern');
+            if (filename.text !== value)
+                filename.text = value;
+            updateFilenamePreview();
+        }));
+        updateFilenamePreview();
         files.add(filename);
 
         const history = Adw.SpinRow.new_with_range(1, 200, 1);
-        history.title = 'History limit';
-        history.subtitle = 'Maximum captures listed in the editor';
+        history.title = t('prefsHistoryLimit');
+        history.subtitle = t('prefsHistoryLimitSubtitle');
         settings.bind('history-limit', history, 'value', Gio.SettingsBindFlags.DEFAULT);
         files.add(history);
+
+        window.connect('close-request', () => {
+            for (const id of signalIds)
+                settings.disconnect(id);
+            signalIds.length = 0;
+            return false;
+        });
     }
 }

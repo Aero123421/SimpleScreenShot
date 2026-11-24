@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 
 const extensionSource = readFileSync('extension/extension.js', 'utf8');
+const prefsSource = readFileSync('extension/prefs.js', 'utf8');
 const schemaSource = readFileSync(
     'extension/schemas/org.gnome.shell.extensions.simple-screenshot.gschema.xml',
     'utf8'
@@ -12,8 +13,16 @@ const schemaSource = readFileSync(
 const shortcutName = extensionSource.match(
     /const SHORTCUT_KEY = '([^']+)'/
 )?.[1];
+const prefsShortcutName = prefsSource.match(
+    /const SHORTCUT_KEY = '([^']+)'/
+)?.[1];
 
 assert.ok(shortcutName, 'The extension must declare its shortcut key');
+assert.equal(
+    prefsShortcutName,
+    shortcutName,
+    'Preferences must use the exact same shortcut key as extension.js'
+);
 assert.notEqual(
     shortcutName,
     'shortcut',

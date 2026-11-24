@@ -23,10 +23,18 @@ class EditorApplication extends Adw.Application {
         super.vfunc_startup();
         if (!this._extensionPath)
             return;
+
+        const display = Gdk.Display.get_default();
+        if (!display)
+            return;
+
+        const iconTheme = Gtk.IconTheme.get_for_display(display);
+        iconTheme.add_search_path(`${this._extensionPath}/editor/icons`);
+
         const provider = new Gtk.CssProvider();
         provider.load_from_path(`${this._extensionPath}/editor/style.css`);
         Gtk.StyleContext.add_provider_for_display(
-            this.get_active_window()?.get_display() ?? Gdk.Display.get_default(),
+            display,
             provider,
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     }
