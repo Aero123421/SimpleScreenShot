@@ -11,14 +11,26 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - name: Install GNOME test dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            gjs gnome-shell gir1.2-gtk-4.0 gir1.2-adw-1 \
-            libgtk-4-dev libadwaita-1-dev xvfb zip
+          sudo apt-get install -y --no-install-recommends \
+            adwaita-icon-theme \
+            fonts-dejavu-core \
+            gir1.2-adw-1 \
+            gir1.2-gtk-4.0 \
+            gir1.2-pango-1.0 \
+            gjs \
+            gnome-shell \
+            libglib2.0-bin \
+            librsvg2-common \
+            unzip \
+            xvfb \
+            zip
       - name: Run checks
         run: xvfb-run -a make check
